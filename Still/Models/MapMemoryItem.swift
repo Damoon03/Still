@@ -3,13 +3,8 @@
 //  Still
 //
 //  Wraps a Memory with the map-only metadata it doesn't carry itself
-//  (origin, author). Now that Memory is confirmed to have `title`,
-//  `text`, and `date`, this wrapper reads those directly instead of
-//  duplicating them — so nothing consuming `.date` / `.previewText`
-//  elsewhere needs to change.
-//
-//  Once real friend/discovery data exists, `mockData` can be deleted
-//  in favor of a repository call.
+//  (origin, author). Once real friend/discovery data exists, `mockData`
+//  can be deleted in favor of a repository call.
 //
 
 import Foundation
@@ -22,7 +17,7 @@ struct MapMemoryItem: Identifiable {
     let authorName: String?
 
     var place: String { memory.place }
-    var coordinate: CLLocationCoordinate2D { memory.coordinate }
+    var coordinate: CLLocationCoordinate2D? { memory.coordinate }
     var date: Date { memory.date }
     var previewText: String? { memory.text.isEmpty ? nil : memory.text }
 
@@ -42,27 +37,17 @@ struct MapMemoryItem: Identifiable {
 }
 
 extension MapMemoryItem {
-    /// Placeholder data so the map has something to render before
-    /// this is wired to Supabase. Reuses your real dummy memories
-    /// (relabeled with a different origin/author) rather than
-    /// fabricating new `Memory` values, since the exact memberwise
-    /// initializer order for Memory isn't visible from here.
-    static var mockData: [MapMemoryItem] {
+    /// Mock friend/discovery pins only. "Own" pins now come from the
+    /// real repository (see MapView). This still leans on
+    /// `Memory.dummyData` purely as convenient placeholder content —
+    /// these aren't meant to look like the user's real memories.
+    static var mockSocialData: [MapMemoryItem] {
         let source = Memory.dummyData
-        guard !source.isEmpty else { return [] }
+        guard source.count > 2 else { return [] }
 
-        let own = source.map { memory in
-            MapMemoryItem(id: memory.id, memory: memory, origin: .own, authorName: nil)
-        }
-
-        var extra: [MapMemoryItem] = []
-        if source.count > 1 {
-            extra.append(MapMemoryItem(id: UUID(), memory: source[1], origin: .friend, authorName: "Emma"))
-        }
-        if source.count > 2 {
-            extra.append(MapMemoryItem(id: UUID(), memory: source[2], origin: .discovery, authorName: "A stranger"))
-        }
-
-        return own + extra
+        return [
+            MapMemoryItem(id: UUID(), memory: source[1], origin: .friend, authorName: "Emma"),
+            MapMemoryItem(id: UUID(), memory: source[2], origin: .discovery, authorName: "A stranger")
+        ]
     }
 }

@@ -3,11 +3,6 @@
 //  Still
 //
 //  Distinguishes where a memory on the map came from.
-//  NOTE: This does not yet exist on your real `Memory` model.
-//  Add a `let origin: MemoryOrigin` (default `.own`) to Memory once
-//  you're ready to wire this to Supabase. Until then, MapMemoryItem
-//  below carries this alongside a plain Memory so nothing in your
-//  existing model needs to change yet.
 //
 
 import SwiftUI
