@@ -13,10 +13,48 @@ struct OnThisDayMemory {
 
 @Observable
 final class HomeViewModel {
-    var memories: [Memory] = Memory.dummyData
+    var memories: [Memory] = []
     var notifications: [StillNotification] = HomeViewModel.mockNotifications
+    var isLoading = false
+    var loadErrorMessage: String?
 
-    var todayMemory: Memory? { memories.first }
+    /// Chosen once per refresh, not recomputed on every redraw —
+    /// a computed property here would re-roll the random pick on
+    /// every SwiftUI diff pass and flicker between sentences.
+    var reflectionLine: String = ""
+
+    private var repository: MemoryRepository?
+
+    /// Called once from the view, where the environment (and so the
+    /// model container) is actually available — can't be done in
+    /// `init` since SwiftUI environment isn't ready yet at that point.
+    func configure(repository: MemoryRepository) {
+        self.repository = repository
+    }
+
+    func refresh() async {
+        guard let repository else { return }
+        isLoading = true
+        loadErrorMessage = nil
+        do {
+            memories = try await repository.fetchAll()
+        } catch {
+            loadErrorMessage = "couldn't load your memories."
+        }
+        isLoading = false
+        reflectionLine = Self.pickReflectionLine(
+            memoriesThisWeek: memoriesThisWeekCount,
+            placesThisWeek: placesThisWeekCount,
+            revisitedThisWeek: revisitedThisWeekCount
+        )
+    }
+
+    /// A memory actually dated today — not just "the most recent
+    /// one," which could be from days ago if nothing's been written
+    /// since.
+    var todayMemory: Memory? {
+        memories.first { Calendar.current.isDateInToday($0.date) }
+    }
 
     /// A memory from the same month/day in a previous year, if one
     /// exists. Returns nil (rather than a placeholder) when nothing
@@ -67,6 +105,67 @@ final class HomeViewModel {
             .count
     }
 
+    // MARK: - Reflection
+
+    /// A single sentence, not a stat — generated from the same data
+    /// as "this week," no new state or analytics. Several templates
+    /// per situation so it doesn't repeat the same line every time;
+    /// deliberately plain rather than poetic — this should read like
+    /// a quiet observation, not a caption trying to sound profound.
+    private static func pickReflectionLine(memoriesThisWeek: Int, placesThisWeek: Int, revisitedThisWeek: Int) -> String {
+        if memoriesThisWeek == 0 {
+            return noMemoriesTemplates.randomElement() ?? noMemoriesTemplates[0]
+        }
+        if revisitedThisWeek > 0 {
+            let templates = revisitedThisWeek == 1
+                ? revisitedSingularTemplates
+                : revisitedPluralTemplates(count: revisitedThisWeek)
+            return templates.randomElement() ?? templates[0]
+        }
+        if placesThisWeek == 1 {
+            return onePlaceTemplates.randomElement() ?? onePlaceTemplates[0]
+        }
+        let templates = multiplePlacesTemplates(count: placesThisWeek)
+        return templates.randomElement() ?? templates[0]
+    }
+
+    private static let noMemoriesTemplates = [
+        "nothing was written down this week.",
+        "this week is still empty, and that's fine.",
+        "no new memories yet this week.",
+        "a quiet week so far.",
+    ]
+
+    private static let onePlaceTemplates = [
+        "one place mattered enough to write down this week.",
+        "this week stayed close to one place.",
+        "one place made it into your week.",
+        "just one place this week.",
+    ]
+
+    private static func multiplePlacesTemplates(count: Int) -> [String] {
+        [
+            "\(count) places found their way into this week.",
+            "this week touched \(count) places.",
+            "\(count) places, each written down.",
+            "this week moved across \(count) places.",
+        ]
+    }
+
+    private static let revisitedSingularTemplates = [
+        "one place was worth returning to this week.",
+        "somewhere familiar came up again this week.",
+        "you went back to one place this week.",
+    ]
+
+    private static func revisitedPluralTemplates(count: Int) -> [String] {
+        [
+            "\(count) places were worth returning to this week.",
+            "a few places came up more than once this week.",
+            "you returned to \(count) places this week.",
+        ]
+    }
+
     // MARK: - Activity
 
     let weekdayLabels = ["m", "t", "w", "t", "f", "s", "s"]
@@ -83,6 +182,7 @@ final class HomeViewModel {
     }
 
     // MARK: - Mock notifications
+    // Still fully mock — no notification backend exists yet.
 
     private static var mockNotifications: [StillNotification] {
         [
