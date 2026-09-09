@@ -6,6 +6,8 @@ private enum MapDisplayMode {
 }
 
 struct MapView: View {
+    @Environment(\.memoryRepository) private var memoryRepository
+
     @State private var mode: MapDisplayMode = .map
     @State private var filter: MemoryOrigin = .own   // My Memories is always the default
     @State private var position: MapCameraPosition = .region(
@@ -15,8 +17,13 @@ struct MapView: View {
         )
     )
 
-    // Replace with a real repository call once wired to Supabase.
-    @State private var allItems: [MapMemoryItem] = MapMemoryItem.mockData
+    // Real, repository-backed — this is the part that's no longer mock.
+    @State private var ownItems: [MapMemoryItem] = []
+
+    // Friends/Discoveries stay dummy until there's a real social backend.
+    private var mockSocialItems: [MapMemoryItem] { MapMemoryItem.mockSocialData }
+
+    private var allItems: [MapMemoryItem] { ownItems + mockSocialItems }
 
     @State private var selectedMemory: MapMemoryItem? = nil
     @State private var selectedDiscovery: MapMemoryItem? = nil
@@ -27,6 +34,8 @@ struct MapView: View {
     @State private var hiddenItemIDs: Set<UUID> = []
     @State private var blockedAuthors: Set<String> = []
 
+    @State private var loadErrorMessage: String?
+
     private var visibleItems: [MapMemoryItem] {
         allItems
             .filter { $0.origin == filter }
@@ -34,11 +43,26 @@ struct MapView: View {
             .filter { $0.authorName.map { !blockedAuthors.contains($0) } ?? true }
     }
 
+    /// Only items with a real coordinate can get a pin — memories
+    /// saved without location (permission denied, capture failed)
+    /// still show up in the lists, just not on the map itself.
+    private var mappableItems: [MapMemoryItem] {
+        visibleItems.filter { $0.coordinate != nil }
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
                 topBar
                 originFilter
+
+                if let loadErrorMessage {
+                    Text(loadErrorMessage)
+                        .font(StillFont.caption(12))
+                        .foregroundStyle(StillColor.danger)
+                        .padding(.horizontal, StillSpacing.md)
+                        .padding(.bottom, StillSpacing.sm)
+                }
 
                 if mode == .map {
                     mapArea
@@ -50,9 +74,14 @@ struct MapView: View {
             .background(StillColor.background)
             .navigationBarHidden(true)
             .navigationDestination(for: UUID.self) { id in
-                if let memory = Memory.dummyData.first(where: { $0.id == id }) {
-                    MemoryDetailView(memory: memory)
+                if let item = allItems.first(where: { $0.memory.id == id }) {
+                    MemoryDetailView(memory: item.memory)
                 }
+            }
+            .onAppear {
+                // Re-runs on every reveal, including after popping
+                // back from an edit/delete, not just on first mount.
+                Task { await loadOwnMemories() }
             }
         }
         .sheet(item: $selectedMemory, onDismiss: {
@@ -74,6 +103,28 @@ struct MapView: View {
                     if let author = item.authorName { blockedAuthors.insert(author) }
                 }
             )
+        }
+    }
+
+    private func loadOwnMemories() async {
+        guard let memoryRepository else { return }
+        loadErrorMessage = nil
+        do {
+            let memories = try await memoryRepository.fetchAll()
+            ownItems = memories.map {
+                MapMemoryItem(id: $0.id, memory: $0, origin: .own, authorName: nil)
+            }
+            if let latest = ownItems.sorted(by: { $0.date > $1.date }).first,
+               let coordinate = latest.coordinate {
+                position = .region(
+                    MKCoordinateRegion(
+                        center: coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                    )
+                )
+            }
+        } catch {
+            loadErrorMessage = "couldn't load your memories."
         }
     }
 
@@ -155,16 +206,18 @@ struct MapView: View {
 
     private var mapArea: some View {
         Map(position: $position) {
-            ForEach(visibleItems) { item in
-                Annotation(item.place, coordinate: item.coordinate) {
-                    marker(for: item)
-                        .onTapGesture {
-                            if item.origin == .discovery {
-                                selectedDiscovery = item
-                            } else {
-                                selectedMemory = item
+            ForEach(mappableItems) { item in
+                if let coordinate = item.coordinate {
+                    Annotation(item.place, coordinate: coordinate) {
+                        marker(for: item)
+                            .onTapGesture {
+                                if item.origin == .discovery {
+                                    selectedDiscovery = item
+                                } else {
+                                    selectedMemory = item
+                                }
                             }
-                        }
+                    }
                 }
             }
         }
@@ -174,21 +227,34 @@ struct MapView: View {
 
     @ViewBuilder
     private func marker(for item: MapMemoryItem) -> some View {
+        // The visible dot stays small on purpose, but the tappable
+        // area around it doesn't — under ~44pt is genuinely hard to
+        // hit reliably on a real device (Apple's own minimum
+        // recommended touch target is 44x44pt).
+        ZStack {
+            dot(for: item)
+        }
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func dot(for item: MapMemoryItem) -> some View {
         switch item.origin {
         case .own:
             Circle()
                 .fill(StillColor.accent.opacity(item.recencyOpacity))
-                .frame(width: 10, height: 10)
+                .frame(width: 12, height: 12)
                 .overlay(Circle().stroke(StillColor.background, lineWidth: 2))
         case .friend:
             Circle()
                 .fill(StillColor.friendMemory.opacity(0.85))
-                .frame(width: 9, height: 9)
+                .frame(width: 11, height: 11)
                 .overlay(Circle().stroke(StillColor.background, lineWidth: 2))
         case .discovery:
             Circle()
                 .fill(StillColor.discoveryMemory.opacity(0.8))
-                .frame(width: 9, height: 9)
+                .frame(width: 11, height: 11)
                 .overlay(Circle().stroke(StillColor.background, lineWidth: 2))
         }
     }
@@ -206,6 +272,13 @@ struct MapView: View {
                     .font(StillFont.caption(12))
                     .foregroundStyle(StillColor.inkSecondary)
 
+                if visibleItems.isEmpty {
+                    Text(filter == .own ? "nothing here yet — write your first memory." : "nothing to show yet.")
+                        .font(StillFont.caption(12))
+                        .foregroundStyle(StillColor.inkSecondary.opacity(0.6))
+                        .padding(.top, StillSpacing.sm)
+                }
+
                 ForEach(visibleItems.prefix(4)) { item in
                     Button(action: {
                         if item.origin == .discovery { selectedDiscovery = item } else { selectedMemory = item }
@@ -222,6 +295,13 @@ struct MapView: View {
     private var fullList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: StillSpacing.sm) {
+                if visibleItems.isEmpty {
+                    Text(filter == .own ? "nothing here yet — write your first memory." : "nothing to show yet.")
+                        .font(StillFont.caption(12))
+                        .foregroundStyle(StillColor.inkSecondary.opacity(0.6))
+                        .padding(.top, StillSpacing.sm)
+                }
+
                 ForEach(visibleItems) { item in
                     Button(action: {
                         if item.origin == .discovery { selectedDiscovery = item } else { selectedMemory = item }
